@@ -1,0 +1,599 @@
+---
+title: "Chômage, emplois vacants et avènement de l'IA"
+subtitle: "Analyse territoriale de Loiret, CVL, France"
+author: "Lansana CISSE - Data Scientist"
+date: today
+lang: fr
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-title: "Sommaire"
+    number-sections: true
+    code-fold: true
+    code-summary: "Afficher le code"
+    embed-resources: true
+    fig-width: 10
+    fig-height: 6
+    fig-dpi: 150
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: true
+knitr:
+  opts_chunk:
+    comment: "#>"
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+## Contexte et problématique
+
+En novembre 2022, le lancement public de **ChatGPT** marque un tournant
+dans l'histoire de l'intelligence artificielle générative. Pour la
+première fois, des outils IA accessibles à tous automatisent des tâches
+cognitives jusqu'alors exclusivement humaines.
+
+Cette étude combine deux niveaux d'analyse :
+
+-   **Macro :** Comment la demande d'emploi a-t-elle évolué avant et
+    après novembre 2022, observe-t-on une divergence entre le Loiret, la
+    CVL et la France?
+-   **Micro :** Les **emplois vacants** par secteur évoluent-ils
+    différemment depuis l'avènement de l'IA ? Certains secteurs
+    résistent mieux que d'autres ?
+
+**Sources de données :**
+
+------------------------------------------------------------------------
+
+## Packages et parametres
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(tidyverse)    # manipulation données + ggplot2
+  library(sf)           # géométries spatiales
+  library(leaflet)      # carte interactive
+  library(scales)       # formatage axes (%, milliers)
+  library(readxl)       # lecture fichier INSEE .xlsx
+  library(knitr)        # tableaux dans Quarto
+  library(kableExtra)   # style des tableaux HTML
+  library(patchwork)    # combinaison de graphiques ggplot2
+})
+
+# Charte graphique
+couleurs <- c("Loiret" = "#003189", "CVL" = "#e63946", "France" = "#adb5bd")
+couleurs_loiret <- c(
+  "Gien"      = "#003189", "Montargis" = "#e63946",
+  "Orléans"   = "#f4a261", "Pithiviers" = "#2a9d8f"
+)
+couleurs_ere <- c("Pré-IA" = "#adb5bd", "Ère IA" = "#7b2d8b")
+couleurs_secteur <- c(
+  "Industrie"            = "#e63946",
+  "Construction"         = "#f4a261",
+  "Tertiaire marchand"   = "#003189",
+  "Tertiaire non-marchand" = "#2a9d8f"
+)
+
+# Constantes
+codes_loiret  <- c("2407", "2409", "2410", "2411")
+couleurs_loiret_map <- c(
+  "Gien" = "#003189", "Montargis" = "#e63946",
+  "Orléans" = "#f4a261", "Pithiviers" = "#2a9d8f"
+)
+
+DATE_IA <- as.Date("2022-10-01")   # T4 2022
+
+f_cvl <- "../data/dares_cvl.xls"
+f_ze  <- "../data/dares_zones_emploi.xls"
+f_ev  <- "../data/dares_emploivacants_brut_emploisvacants.csv"
+f_geo <- "../data/georef-france-zone-emploi-2020.geojson"
+```
+
+## Chargement des données
+
+```{r load}
+dares_cvl <- read.csv(f_cvl, sep = ";", encoding = "UTF-8")
+dares_ze  <- read.csv(f_ze,  sep = ";", encoding = "UTF-8")
+zones_geo <- st_read(f_geo,  quiet = TRUE)
+ev_raw <- read.csv(f_ev, sep = ";", encoding = "UTF-8", check.names = FALSE)
+names(ev_raw) <- names(ev_raw) %>%
+  str_replace_all("\ufeff", "") %>% str_trim()
+
+cat("Dares CVL       :", nrow(dares_cvl), "lignes\n")
+cat("Dares ZE        :", nrow(dares_ze),  "lignes\n")
+cat("Emplois vacants :", nrow(ev_raw),    "lignes\n")
+cat("GeoJSON         :", nrow(zones_geo), "zones\n")
+```
+
+## Préparation des données
+
+```{r}
+dares_cvl_clean <- dares_cvl %>%
+  filter(Variable == "Catégorie A", Année >= 2019) %>%
+  mutate(
+    Valeur     = as.numeric(Valeur),
+    Date       = as.Date(paste0(Date, "-01")),
+    territoire = case_when(
+      Territoire == "Loiret"                ~ "Loiret",
+      Territoire == "CENTRE-VAL DE LOIRE"   ~ "CVL",
+      Territoire == "FRANCE MÉTROPOLITAINE" ~ "France",
+      TRUE ~ NA_character_
+    ),
+    ere = if_else(Date >= DATE_IA, "Ère-IA", "Pré-IA")
+  ) %>%
+  filter(!is.na(territoire))
+
+cat("dares_cvl_clean :", nrow(dares_cvl_clean), "lignes\n")
+cat("Période :", format(min(dares_cvl_clean$Date), "%Y"),
+    "", format(max(dares_cvl_clean$Date), "%Y"), "\n")
+```
+
+```{r }
+dares_ze_clean <- dares_ze %>%
+  filter(
+    Catégorie       == "A",
+    Sexe            == "Total",
+    Tranche.d.âge  == "Total",
+    Ancienneté     == "Total",
+    Type.de.données == "Brutes"
+  ) %>%
+  mutate(
+    Date    = as.Date(paste0(Date, "-01"), format = "%Y-%m-%d"),
+    code_ze = as.character(Code.zone.d.emploi),
+    nb      = as.numeric(gsub("[[:space:]]", "",
+                              Nombre.de.demandeurs.d.emploi))
+  ) %>%
+  select(Date, code_ze, Zone.d.emploi, nb)
+
+dernier_mois <- max(dares_ze_clean$Date, na.rm = TRUE)
+cat("Dernier mois :", format(dernier_mois, "%B %Y"), "\n")
+```
+
+```{r }
+trim_to_date <- function(x) {
+  annee <- as.integer(substr(x, 1, 4))
+  trim  <- as.integer(substr(x, 7, 7))
+  as.Date(paste0(annee, "-", sprintf("%02d", (trim - 1) * 3 + 1), "-01"))
+}
+
+ev_clean <- ev_raw %>%
+  rename(
+    date         = `Date`,
+    champ        = `Champ`,
+    nomenclature = `Nomenclature`,
+    code_naf     = `Code NAF`,
+    libelle_naf  = `Libellé NAF`,
+    type_donnees = `Type de données`,
+    nb_vacants   = `Nombre d'emplois vacants`,
+    taux_vacants = `Taux d'emplois vacants (en %)`
+  ) %>%
+  mutate(
+    Date         = trim_to_date(date),
+    nb_vacants   = as.numeric(nb_vacants),
+    taux_vacants = as.numeric(taux_vacants),
+    ere          = if_else(Date >= DATE_IA, "Ère IA", "Pré-IA")
+  ) %>%
+  filter(
+    !is.na(Date),
+    !is.na(nb_vacants),
+    Date >= as.Date("2019-01-01")
+  )
+
+ev_total <- ev_clean %>%
+  filter(nomenclature == "A1 - Ensemble", champ == "Ensemble")
+
+ev_a4 <- ev_clean %>%
+  filter(nomenclature == "A4", champ == "Plus de 10 salariés") %>%
+  mutate(libelle_naf = str_trim(libelle_naf))
+
+ev_a21 <- ev_clean %>%
+  filter(nomenclature == "A21", champ == "Plus de 10 salariés")
+
+cat("Emplois vacants total France :", nrow(ev_total), "trimestres\n")
+cat("Secteurs A4  :", n_distinct(ev_a4$code_naf), "\n")
+cat("Secteurs A21 :", n_distinct(ev_a21$code_naf), "\n")
+cat("Période :", format(min(ev_clean$Date), "%Y"),
+    "→", format(max(ev_clean$Date), "%Y"), "\n")
+```
+
+```{r}
+codes_loiret <- c("2407", "2409", "2410", "2411")
+
+ze_stat <- dares_ze_clean %>%
+  filter(Date == dernier_mois) %>%
+  group_by(code_ze, Zone.d.emploi) %>%
+  summarise(inscrits_catA = sum(nb, na.rm = TRUE), .groups = "drop") %>%
+  mutate(is_loiret = code_ze %in% codes_loiret)
+
+ze_map <- zones_geo %>%
+  filter(reg_code == "24") %>%
+  left_join(ze_stat, by = c("ze2020_code" = "code_ze")) %>%
+  mutate(is_loiret = ze2020_code %in% codes_loiret)
+
+ze_map_wgs84 <- st_transform(ze_map, 4326)
+```
+
+## Axe 1 : Demande d'emploi avant et après l'avènement de l'IA
+
+### Évolution relative de CVL, Loiret, France
+
+```{r}
+serie_ia <- dares_cvl_clean %>%
+  group_by(territoire) %>%
+  arrange(Date) %>%
+  mutate(
+    base_ia   = Valeur[Date == DATE_IA][1],
+    indice_ia = (Valeur / base_ia) * 100
+  ) %>%
+  ungroup()
+
+ggplot(serie_ia, aes(x = Date, y = indice_ia,
+                     color = territoire, group = territoire)) +
+  # Zone pré-IA
+  annotate("rect",
+           xmin = min(serie_ia$Date), xmax = DATE_IA,
+           ymin = -Inf, ymax = Inf, fill = "#adb5bd", alpha = 0.08) +
+  annotate("text", x = as.Date("2020-07-01"), y = 107,
+           label = "Pré-IA", color = "grey50", size = 3.2, fontface = "italic") +
+  # Zone post-IA
+  annotate("rect",
+           xmin = DATE_IA, xmax = max(serie_ia$Date),
+           ymin = -Inf, ymax = Inf, fill = "#7b2d8b", alpha = 0.05) +
+  annotate("text", x = as.Date("2024-01-01"), y = 107,
+           label = "Ère IA", color = "#7b2d8b", size = 3.2, fontface = "italic") +
+  # Ligne pivot
+  geom_vline(xintercept = DATE_IA, linetype = "dashed",
+             color = "#7b2d8b", linewidth = 1) +
+  annotate("text", x = DATE_IA + 30, y = 103,
+           label = "Novembre 2022\nChatGPT", color = "#7b2d8b",
+           size = 2.8, hjust = 0, fontface = "bold") +
+  geom_hline(yintercept = 100, linetype = "dotted", color = "grey60") +
+  geom_line(linewidth = 1.2) +
+  geom_point(data = serie_ia %>% filter(Date == DATE_IA),
+             size = 3, shape = 21, fill = "white", stroke = 1.5) +
+  scale_color_manual(values = couleurs, name = NULL) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = label_number(suffix = "")) +
+  labs(
+    title    = "Demandeurs d'emploi categorie A avant et après l'avènement de l'IA",
+    subtitle = "Base 100 = T4 2022 (lancement de ChatGPT en novembre 2022)",
+    x = NULL, y = "Indice"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position  = "top",
+    panel.grid.minor = element_blank(),
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    plot.title       = element_text(face = "bold")
+  )
+```
+
+### Comparaison pré-IA / ère IA par territoire
+
+```{r}
+# Valeur moyenne des inscrits cat. A par ère et territoire.
+
+dares_cvl_clean %>%
+  group_by(territoire, ere) %>%
+  summarise(moy = mean(Valeur, na.rm = TRUE), .groups = "drop") %>%
+  mutate(ere = factor(ere, levels = c("Pré-IA", "Ère IA"))) %>%
+  ggplot(aes(x = territoire, y = moy, fill = ere)) +
+  geom_col(position = "dodge", width = 0.6) +
+  geom_text(aes(label = label_number(big.mark = " ", accuracy = 1)(moy)),
+            position = position_dodge(0.6), vjust = -0.4,
+            size = 3.2, fontface = "bold") +
+  scale_fill_manual(values = couleurs_ere, name = NULL) +
+  scale_y_continuous(labels = label_number(big.mark = " "),
+                     expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title    = "Moyenne des demandeurs d'emploi de catégorie A par ère.",
+    subtitle = "Pré-IA : avant T4 2022 | Ère IA : T4 2022 et après",
+    x = NULL, y = "Moyenne (nb inscrits)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "top",
+        panel.grid.minor = element_blank())
+```
+
+### Évolution par zone d'emploi - Loiret
+
+```{r}
+# Evolution mensuelle par zone d'emploi du Loiret. Base 100 = T4 2022."
+
+dares_ze_clean %>%
+  filter(code_ze %in% codes_loiret,
+         Date    >= as.Date("2019-01-01")) %>%
+  group_by(code_ze, Zone.d.emploi) %>%
+  arrange(Date) %>%
+  mutate(
+    base_ia = nb[Date == DATE_IA][1],
+    indice  = (nb / base_ia) * 100
+  ) %>%
+  ungroup() %>%
+  ggplot(aes(x = Date, y = indice, color = Zone.d.emploi)) +
+  annotate("rect",
+           xmin = as.Date("2019-01-01"), xmax = DATE_IA,
+           ymin = -Inf, ymax = Inf, fill = "#adb5bd", alpha = 0.08) +
+  annotate("rect",
+           xmin = DATE_IA, xmax = max(dares_ze_clean$Date),
+           ymin = -Inf, ymax = Inf, fill = "#7b2d8b", alpha = 0.05) +
+  geom_vline(xintercept = DATE_IA, linetype = "dashed",
+             color = "#7b2d8b", linewidth = 0.9) +
+  annotate("text", x = DATE_IA + 30, y = max(
+    dares_ze_clean %>%
+      filter(code_ze %in% codes_loiret, Date >= as.Date("2019-01-01")) %>%
+      group_by(code_ze) %>%
+      mutate(base_ia = nb[Date == DATE_IA][1],
+             indice  = (nb / base_ia) * 100) %>%
+      pull(indice), na.rm = TRUE) * 0.97,
+    label = "ChatGPT\nNovembre 2022", color = "#7b2d8b",
+    size = 2.6, hjust = 0, fontface = "bold") +
+  geom_vline(xintercept = as.Date("2025-01-01"),
+             linetype = "dotted", color = "#e63946", linewidth = 0.7) +
+  annotate("text", x = as.Date("2025-02-01"), y = 108,
+           label = "Rupture\n2025", color = "#e63946",
+           size = 2.5, hjust = 0, fontface = "italic") +
+  geom_hline(yintercept = 100, linetype = "dotted", color = "grey60") +
+  geom_line(linewidth = 1.1) +
+  scale_color_manual(values = couleurs_loiret_map, name = NULL) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(
+    title    = "Inscrits cat. A - Zones d'emploi du Loiret",
+    subtitle = "Base 100 = T4 2022 (lancement ChatGPT)",
+    x = NULL, y = "Indice"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position  = "top",
+    panel.grid.minor = element_blank(),
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    plot.title       = element_text(face = "bold")
+  )
+```
+
+## Axe 2 - Emplois vacants : dimension micro-économique
+
+### Vue d'ensemble - France entière
+
+```{r ev-total}
+# Emplois vacants France entière (ensemble des secteurs)."
+
+ggplot(ev_total, aes(x = Date, y = nb_vacants / 1000)) +
+  annotate("rect",
+           xmin = min(ev_total$Date), xmax = DATE_IA,
+           ymin = -Inf, ymax = Inf, fill = "#adb5bd", alpha = 0.07) +
+  annotate("rect",
+           xmin = DATE_IA, xmax = max(ev_total$Date),
+           ymin = -Inf, ymax = Inf, fill = "#7b2d8b", alpha = 0.05) +
+  geom_vline(xintercept = DATE_IA, linetype = "dashed",
+             color = "#7b2d8b", linewidth = 1) +
+  annotate("text", x = DATE_IA + 30, y = max(ev_total$nb_vacants / 1000) * 0.95,
+           label = "Novembre 2022", color = "#7b2d8b",
+           size = 3, hjust = 0, fontface = "bold") +
+  geom_line(color = "#003189", linewidth = 1.2) +
+  geom_area(fill = "#003189", alpha = 0.08) +
+  scale_y_continuous(labels = label_number(suffix = " k", accuracy = 1)) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(
+    title    = "Emplois vacants en France entre 2019 et 2025",
+    subtitle = "Ensemble des secteurs (B à S, hors administration publique)",
+    x = NULL, y = "Emplois vacants (milliers)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+### Taux d'emplois vacants par grand secteur avant vs après IA
+
+```{r}
+ev_a4 %>%
+  filter(Date >= as.Date("2019-01-01")) %>%
+  group_by(libelle_naf, ere) %>%
+  summarise(taux_moy = mean(taux_vacants, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    ere        = factor(ere, levels = c("Pré-IA", "Ère IA")),
+    libelle_naf = str_wrap(libelle_naf, 20)
+  ) %>%
+  ggplot(aes(x = reorder(libelle_naf, taux_moy), y = taux_moy, fill = ere)) +
+  geom_col(position = "dodge", width = 0.65) +
+  geom_text(aes(label = paste0(round(taux_moy, 2), "%")),
+            position = position_dodge(0.65),
+            hjust = -0.1, size = 3, fontface = "bold") +
+  coord_flip(clip = "off") +
+  scale_y_continuous(labels = label_percent(scale = 1, accuracy = 0.1),
+                     expand = expansion(mult = c(0, 0.2))) +
+  scale_fill_manual(values = couleurs_ere, name = NULL) +
+  labs(
+    title    = "Taux d'emplois vacants par grand secteur",
+    subtitle = "Pré-IA : 2019–T3 2022 | Ère IA : T4 2022–2025",
+    x = NULL, y = "Taux moyen (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold"),
+    legend.position  = "top",
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Évolution trimestrielle par secteur A4
+
+```{r}
+ev_a4 %>%
+  filter(Date >= as.Date("2019-01-01")) %>%
+  ggplot(aes(x = Date, y = taux_vacants, color = libelle_naf)) +
+  annotate("rect",
+           xmin = DATE_IA, xmax = max(ev_a4$Date),
+           ymin = -Inf, ymax = Inf, fill = "#7b2d8b", alpha = 0.05) +
+  geom_vline(xintercept = DATE_IA, linetype = "dashed",
+             color = "#7b2d8b", linewidth = 0.9) +
+  annotate("text", x = DATE_IA + 30, y = max(ev_a4$taux_vacants, na.rm = TRUE) * 0.95,
+           label = "Novembre 2022", color = "#7b2d8b",
+           size = 2.8, hjust = 0, fontface = "bold") +
+  geom_line(linewidth = 1.1) +
+  scale_color_manual(values = couleurs_secteur, name = NULL) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(labels = label_percent(scale = 1, accuracy = 0.1)) +
+  labs(
+    title    = "Taux d'emplois vacants par grand secteur entre 2019 et 2025",
+    subtitle = "Ligne pointillée violette = avènement de ChatGPT (T4 2022)",
+    x = NULL, y = "Taux d'emplois vacants (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position  = "top",
+    panel.grid.minor = element_blank(),
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    plot.title       = element_text(face = "bold")
+  )
+```
+
+### Zoom secteurs exposés à l'IA - A21
+
+```{r ev-a21-ia}
+# Secteurs les plus exposés à l'automatisation IA (littérature académique)
+secteurs_ia <- c("J", "M", "K")
+
+ev_a21 %>%
+  filter(Date >= as.Date("2019-01-01"),
+         code_naf %in% secteurs_ia) %>%
+  mutate(libelle_court = case_when(
+    code_naf == "J" ~ "Info. & Communication",
+    code_naf == "M" ~ "Act. spécialisées & techniques",
+    code_naf == "K" ~ "Activités financières",
+    TRUE ~ libelle_naf
+  )) %>%
+  ggplot(aes(x = Date, y = taux_vacants, color = libelle_court)) +
+  annotate("rect",
+           xmin = DATE_IA, xmax = max(ev_a21$Date, na.rm = TRUE),
+           ymin = -Inf, ymax = Inf, fill = "#7b2d8b", alpha = 0.06) +
+  geom_vline(xintercept = DATE_IA, linetype = "dashed",
+             color = "#7b2d8b", linewidth = 0.9) +
+  annotate("text", x = DATE_IA + 30,
+           y = max(ev_a21 %>% filter(code_naf %in% secteurs_ia) %>%
+                     pull(taux_vacants), na.rm = TRUE) * 0.95,
+           label = "ChatGPT\nNovembre 2022", color = "#7b2d8b",
+           size = 2.8, hjust = 0, fontface = "bold") +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2, shape = 21, fill = "white", stroke = 1) +
+  scale_color_manual(
+    values = c("Info. & Communication"         = "#003189",
+               "Act. spécialisées & techniques" = "#e63946",
+               "Activités financières"          = "#f4a261"),
+    name = NULL
+  ) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(labels = label_percent(scale = 1, accuracy = 0.1)) +
+  labs(
+    title    = "Secteurs exposés à l'IA - taux d'emplois vacants",
+    subtitle = "Info & com, Act. spécialisées, Finance les plus susceptibles d'être transformés",
+    x = NULL, y = "Taux d'emplois vacants (%)",
+    caption  = "Source : DARES - A21 · L. CISSE"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position  = "top",
+    panel.grid.minor = element_blank(),
+    axis.text.x      = element_text(angle = 45, hjust = 1),
+    plot.title       = element_text(face = "bold")
+  )
+```
+
+### Variation pré / post IA par secteur A21
+
+```{r ev-a21-delta}
+#| label: ev-a21-delta
+#| fig-cap: "Variation du taux moyen d'emplois vacants entre les deux ères par secteur."
+
+delta_secteur <- ev_a21 %>%
+  filter(Date >= as.Date("2019-01-01")) %>%
+  mutate(libelle_court = str_extract(libelle_naf, "^[^(]+") %>% str_trim()) %>%
+  group_by(code_naf, libelle_court, ere) %>%
+  summarise(taux_moy = mean(taux_vacants, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = ere, values_from = taux_moy) %>%
+  mutate(
+    delta     = `Ère IA` - `Pré-IA`,
+    direction = if_else(delta > 0, "Hausse", "Baisse")
+  ) %>%
+  arrange(delta)
+
+delta_secteur %>%
+  ggplot(aes(x = reorder(libelle_court, delta),
+             y = delta, fill = direction)) +
+  geom_col() +
+  geom_text(aes(label = paste0(if_else(delta > 0, "+", ""),
+                               round(delta, 2), " pts"),
+                hjust = if_else(delta > 0, -0.1, 1.1)),
+            size = 3, fontface = "bold") +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = c("Hausse" = "#7b2d8b", "Baisse" = "#e63946"),
+                    name = NULL) +
+  scale_y_continuous(expand = expansion(mult = c(0.2, 0.2))) +
+  labs(
+    title    = "Variation du taux d'emplois vacants - Ère IA vs Pré-IA",
+    subtitle = "Différence de taux moyen (en points de %) - secteurs A21",
+    x = NULL, y = "Variation (points de %)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title       = element_text(face = "bold"),
+    legend.position  = "top",
+    panel.grid.minor = element_blank()
+  )
+```
+
+# Axe 3 - Cartographie territoriale
+
+### Carte choroplèthe - CVL
+
+```{r}
+ggplot(ze_map) +
+  geom_sf(aes(fill = inscrits_catA), color = "white", linewidth = 0.4) +
+  geom_sf(data = ze_map %>% filter(is_loiret),
+          fill = NA, color = "#003189", linewidth = 1.2) +
+  geom_sf_label(aes(label = ze2020_name),
+                size = 2.2, fill = "white", alpha = 0.75,
+                label.size = 0, check_overlap = TRUE) +
+  scale_fill_distiller(palette = "YlOrRd", direction = 1,
+                       name    = "Inscrits\ncat. A",
+                       labels  = label_number(big.mark = " "),
+                       na.value = "#dddddd") +
+  labs(
+    subtitle = paste0(format(dernier_mois, "%B %Y"),
+                      " | Contour bleu = Loiret")
+  ) +
+  theme_void(base_size = 12) +
+  theme(plot.subtitle   = element_text(hjust = 0.5, color = "grey50"),
+        legend.position = "right")
+```
+
+## Synthèse
+
+### Limites et perspectives
+
+**Limites :**
+
+-   Le pivot novembre 2022 est **corrélationnel**, non causal,
+    l'avènement de l'IA coïncide avec d'autres facteurs (contexte macro,
+    fin des aides COVID, inflation).
+-   Les emplois vacants DARES concernent les **établissements de plus de
+    10 salariés**, sous-représentant l'économie des indépendants et TPE.
+-   **Rupture de série janvier 2025** : loi pour le plein emploi
+    comparaisons avant/après à interpréter avec précaution.
+
+**Pistes d'approfondissement :**
+
+| Axe | Source | Valeur ajoutée |
+|----|----|----|
+| Emplois vacants par métier (ROME) | France Travail Open Data | Identifier les métiers en tension post-IA |
+| Formations suivies par les inscrits | DARES | Mesurer l'adaptation des compétences |
+| Revenus et pauvreté | INSEE Filosofi | Croiser fragilités territoriales |
+| Automatisation par métier | OCDE / McKinsey | Scorer l'exposition IA des ZE |
+
+------------------------------------------------------------------------
