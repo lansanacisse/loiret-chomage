@@ -1,50 +1,30 @@
 ---
+---
 title: "Chômage, emplois vacants et avènement de l'IA"
 subtitle: "Analyse territoriale de Loiret, CVL, France"
 author: "Lansana CISSE - Data Scientist"
 date: today
 lang: fr
 format:
-  html:
-    theme: cosmo
+  pdf:
     toc: true
-    toc-depth: 3
-    toc-title: "Sommaire"
-    number-sections: true
-    code-fold: true
-    code-summary: "Afficher le code"
-    embed-resources: true
-    fig-width: 10
-    fig-height: 6
-    fig-dpi: 150
+    keep-tex: false
+    fontsize: 11pt
+    geometry: margin=1in
 execute:
-  echo: true
+  echo: false
   warning: false
   message: false
-  cache: true
-knitr:
-  opts_chunk:
-    comment: "#>"
-editor: 
-  markdown: 
-    wrap: 72
 ---
 
 ## Contexte et problématique
 
-En novembre 2022, le lancement public de **ChatGPT** marque un tournant
-dans l'histoire de l'intelligence artificielle générative. Pour la
-première fois, des outils IA accessibles à tous automatisent des tâches
-cognitives jusqu'alors exclusivement humaines.
+En novembre 2022, le lancement public de **ChatGPT** marque un tournant dans l'histoire de l'intelligence artificielle générative. Pour la première fois, des outils IA accessibles à tous automatisent des tâches cognitives jusqu'alors exclusivement humaines.
 
 Cette étude combine deux niveaux d'analyse :
 
--   **Macro :** Comment la demande d'emploi a-t-elle évolué avant et
-    après novembre 2022, observe-t-on une divergence entre le Loiret, la
-    CVL et la France?
--   **Micro :** Les **emplois vacants** par secteur évoluent-ils
-    différemment depuis l'avènement de l'IA ? Certains secteurs
-    résistent mieux que d'autres ?
+-   **Macro :** Comment la demande d'emploi a-t-elle évolué avant et après novembre 2022, observe-t-on une divergence entre le Loiret, la CVL et la France?
+-   **Micro :** Les **emplois vacants** par secteur évoluent-ils différemment depuis l'avènement de l'IA ? Certains secteurs résistent mieux que d'autres ?
 
 **Sources de données :**
 
@@ -579,18 +559,14 @@ ggplot(ze_map) +
 
 **Limites :**
 
--   Le pivot novembre 2022 est **corrélationnel**, non causal,
-    l'avènement de l'IA coïncide avec d'autres facteurs (contexte macro,
-    fin des aides COVID, inflation).
--   Les emplois vacants DARES concernent les **établissements de plus de
-    10 salariés**, sous-représentant l'économie des indépendants et TPE.
--   **Rupture de série janvier 2025** : loi pour le plein emploi
-    comparaisons avant/après à interpréter avec précaution.
+-   Le pivot novembre 2022 est **corrélationnel**, non causal, l'avènement de l'IA coïncide avec d'autres facteurs (contexte macro, fin des aides COVID, inflation).
+-   Les emplois vacants DARES concernent les **établissements de plus de 10 salariés**, sous-représentant l'économie des indépendants et TPE.
+-   **Rupture de série janvier 2025** : loi pour le plein emploi comparaisons avant/après à interpréter avec précaution.
 
 **Pistes d'approfondissement :**
 
 | Axe | Source | Valeur ajoutée |
-|----|----|----|
+|------------------|------------------|-----------------------------------|
 | Emplois vacants par métier (ROME) | France Travail Open Data | Identifier les métiers en tension post-IA |
 | Formations suivies par les inscrits | DARES | Mesurer l'adaptation des compétences |
 | Revenus et pauvreté | INSEE Filosofi | Croiser fragilités territoriales |
