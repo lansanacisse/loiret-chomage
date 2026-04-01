@@ -23,5 +23,3 @@ Analyse de l'évolution des emplois vacants dans le Loiret et la région Centre-
 Lansana CISSE
 Data Scientist
 
----
-
