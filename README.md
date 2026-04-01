@@ -1,4 +1,4 @@
-# Analyse des emplois vacants dans le Loiret
+# Emploi Loiret 
 
 Analyse de l'évolution des emplois vacants dans le Loiret et la région Centre-Val de Loire autour de l'essor de l'IA (fin 2022). Document démontrant la maîtrise de la chaîne de traitement de données publiques.
 
